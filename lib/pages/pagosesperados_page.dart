@@ -44,11 +44,10 @@ class _PagosEsperadosState extends State<PagosEsperados> {
   Future<List<Map<String, dynamic>>> getMatchingDocuments() async {
     List<Map<String, dynamic>> matchingDocuments = [];
 
-    final QuerySnapshot planPagosSnapshot = await FirebaseFirestore.instance
-        .collection('planPagos')
-        .get();
+    final QuerySnapshot planPagosSnapshot =
+        await FirebaseFirestore.instance.collection('planPagos').get();
 
-    final List<Future<Map<String, dynamic>>> quoteAndCustomerFutures = [];
+    final List<Future<Map<String, dynamic>>> asyncTasks = []; // ✅ SOLO AQUÍ
 
     for (QueryDocumentSnapshot planPagoSnapshot in planPagosSnapshot.docs) {
       final String planPagoId = planPagoSnapshot.id;
@@ -61,67 +60,61 @@ class _PagosEsperadosState extends State<PagosEsperados> {
       for (QueryDocumentSnapshot pagoSnapshot in pagosSnapshot.docs) {
         final Map<String, dynamic> data =
             pagoSnapshot.data() as Map<String, dynamic>;
-        final String fechaPagoString = data['fechaPago'];
-        final DateTime fechaPago =
-            DateFormat('dd-MM-yyyy').parse(fechaPagoString);
 
-        // Collect the planPago IDs for concurrent fetching
+        final DateTime fechaPago = DateFormat('dd-MM-yyyy').parse(data['fechaPago']);
+
         final String idPlanPagos = data['idPlanPagos'];
-        quoteAndCustomerFutures.add(fetchQuoteAndCustomer(idPlanPagos));
 
-        if (fechaPago.isAfter(startDate) && fechaPago.isBefore(endDate)) {
-          final pagoEsperado = {
-            "lote": planPagoId,
-            "idPago": pagoSnapshot.id,
-            "idPlan": idPlanPagos,
-            "fechaPago": data['fechaPago'],
-            "valorPago": data['valorPago'],
-            "conceptoPago": data['conceptoPago'],
-          };
-          matchingDocuments.add(pagoEsperado);
+        if (!fechaPago.isBefore(startDate) && !fechaPago.isAfter(endDate)) {
+          asyncTasks.add(() async {
+            try {
+              final quoteAndCustomer = await fetchQuoteAndCustomer(idPlanPagos);
+
+              return {
+                "lote": planPagoId,
+                "idPago": pagoSnapshot.id,
+                "idPlan": idPlanPagos,
+                "fechaPago": data['fechaPago'],
+                "valorPago": data['valorPago'],
+                "conceptoPago": data['conceptoPago'],
+                "quote": quoteAndCustomer['quoteSnap'],
+                "customer": quoteAndCustomer['customer'],
+              };
+            } catch (e) {
+              return <String, dynamic>{};
+            }
+          }());
         }
       }
     }
 
-    // Wait for all quoteSnap and customer data to be fetched
-    final List<Map<String, dynamic>> quoteAndCustomerData =
-        await Future.wait(quoteAndCustomerFutures);
-
-    // Combine quoteSnap and customer data into matchingDocuments
-    for (int i = 0; i < matchingDocuments.length; i++) {
-      final Map<String, dynamic> matchingDocument = matchingDocuments[i];
-      final Map<String, dynamic> quoteSnapData = quoteAndCustomerData[i]['quoteSnap'];
-      final Map<String, dynamic> customerData = quoteAndCustomerData[i]['customer'];
-
-      matchingDocument["idCliente"] = quoteSnapData["clienteID"];
-      matchingDocument["nameCliente"] =
-          "${customerData["nameCliente"]} ${customerData["lastnameCliente"]}";
-      matchingDocument["telCliente"] = customerData["telCliente"];
-      matchingDocument["emailCliente"] = customerData["emailCliente"];
-    }
-
-    // Sort the matchingDocuments by fechaPago
-    matchingDocuments.sort((a, b) {
-      DateTime dateA = DateFormat('dd-MM-yyyy').parse(a['fechaPago']);
-      DateTime dateB = DateFormat('dd-MM-yyyy').parse(b['fechaPago']);
-      return dateA.compareTo(dateB);
-    });
+    final List<Map<String, dynamic>> results = await Future.wait(asyncTasks);
+    matchingDocuments = results.where((e) => e.isNotEmpty).toList();
 
     return matchingDocuments;
   }
+
+
 
   Future<Map<String, dynamic>> fetchQuoteAndCustomer(String idPlanPagos) async {
     final DocumentSnapshot<Map<String, dynamic>> quoteSnap =
         await db.collection('quotes').doc(idPlanPagos).get();
 
-    final Map<String, dynamic> customer =
-        await getCustomerInfo(quoteSnap["clienteID"]);
+    final clienteID = quoteSnap["clienteID"];
+
+    // VERIFICAMOS SI clienteID EXISTE Y NO ES NULO
+    if (clienteID == null) {
+      throw Exception("❌ clienteID es null o no existe en el quote con ID $idPlanPagos");
+    }
+
+    final Map<String, dynamic> customer = await getCustomerInfo(clienteID);
 
     return {
       'quoteSnap': quoteSnap.data(),
       'customer': customer,
     };
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -321,6 +314,7 @@ class _PagosEsperadosState extends State<PagosEsperados> {
                         itemBuilder: (context, index) {
                           String conceptoText = '';
                           var idPago = snapshot.data?[index]['idPago'];
+
                           if (idPago == 'SEP1') {
                             conceptoText = 'Abono de separación #1';
                           } else if (idPago == 'SEP2') {
@@ -329,9 +323,18 @@ class _PagosEsperadosState extends State<PagosEsperados> {
                             conceptoText = 'Pago total';
                           } else if (idPago == 'CINI') {
                             conceptoText = 'Abono de cuota inicial';
-                          } else{
+                          } else {
                             conceptoText = 'Cuota #$idPago';
                           }
+
+                          // ✅ Aquí extraemos el mapa del cliente correctamente
+                          final customer = snapshot.data?[index]['customer'] as Map<String, dynamic>?;
+                          final nombreCliente = customer?['nameCliente'] ?? 'Desconocido';
+                          final apellidoCliente = customer?['lastnameCliente'] ?? '';
+                          final telefonoCliente = customer?['telCliente'] ?? '';
+                          final emailCliente = customer?['emailCliente'] ?? '';
+                          final idCliente = snapshot.data?[index]['idCliente'] ?? '';
+
                           return ListTile(
                             leading: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
@@ -342,9 +345,10 @@ class _PagosEsperadosState extends State<PagosEsperados> {
                                     getNumbers(snapshot.data?[index]['lote'])!,
                                     textAlign: TextAlign.center,
                                     style: TextStyle(
-                                        color: primaryColor,
-                                        fontWeight: FontWeight.bold),
-                                  )
+                                      color: primaryColor,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
                                 ),
                               ],
                             ),
@@ -356,26 +360,28 @@ class _PagosEsperadosState extends State<PagosEsperados> {
                             ),
                             subtitle: Column(
                               children: [
-                                Text('Concepto: $conceptoText', style: const TextStyle(fontSize: 10),),
-                                Text('Cliente: ${snapshot.data?[index]['nameCliente']}', style: const TextStyle(fontSize: 10),)
+                                Text('Concepto: $conceptoText', style: const TextStyle(fontSize: 10)),
+                                Text('Cliente: $nombreCliente $apellidoCliente', style: const TextStyle(fontSize: 10)),
                               ],
                             ),
                             trailing: IconButton(
-                              onPressed:  (() async {
-                                String valorEnLetras = await numeroEnLetras(snapshot.data?[index]['valorPago'].toDouble(), 'pesos');
-                                // ignore: use_build_context_synchronously
+                              onPressed: (() async {
+                                String valorEnLetras = await numeroEnLetras(
+                                  snapshot.data?[index]['valorPago'].toDouble(),
+                                  'pesos',
+                                );
+
                                 Navigator.push(
-                                  // ignore: use_build_context_synchronously
                                   context,
                                   MaterialPageRoute(
                                     builder: (context) => PDFPreInvoice(
                                       idPlan: snapshot.data?[index]['idPlan'],
-                                      lote: getNumbers(snapshot.data?[index]['lote'])!,                                
-                                      nameCliente: snapshot.data?[index]['nameCliente'],
-                                      idCliente: snapshot.data?[index]['idCliente'],
-                                      phoneCliente: snapshot.data?[index]['telCliente'],
-                                      emailCliente: snapshot.data?[index]['emailCliente'],                                        
-                                      paymentDate: snapshot.data?[index]['fechaPago'],                                  
+                                      lote: getNumbers(snapshot.data?[index]['lote'])!,
+                                      nameCliente: '$nombreCliente $apellidoCliente',
+                                      idCliente: idCliente,
+                                      phoneCliente: telefonoCliente,
+                                      emailCliente: emailCliente,
+                                      paymentDate: snapshot.data?[index]['fechaPago'],
                                       paymentValue: snapshot.data?[index]['valorPago'].toDouble(),
                                       paymentValueLetters: valorEnLetras,
                                       conceptoPago: conceptoText,
@@ -383,37 +389,14 @@ class _PagosEsperadosState extends State<PagosEsperados> {
                                   ),
                                 );
                                 setState(() {});
-                              }), 
-                              icon: const Icon(Icons.picture_as_pdf_outlined)
+                              }),
+                              icon: const Icon(Icons.picture_as_pdf_outlined),
                             ),
-                            onTap: ( (){}/*() async {
-                              String valorEnLetras = await numeroEnLetras(snapshot.data?[index]['valorPago'].toDouble(), 'pesos');
-                              // ignore: use_build_context_synchronously
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => AddPaymentPage(
-                                    idPlan: snapshot.data?[index]['idPlan'],
-                                    lote: getNumbers(snapshot.data?[index]['lote'])!,                                
-                                    nameCliente: snapshot.data?[index]['nameCliente'],
-                                    idCliente: snapshot.data?[index]['idCliente'],
-                                    phoneCliente: snapshot.data?[index]['telCliente'],
-                                    emailCliente: snapshot.data?[index]['emailCliente'],                                        
-                                    paymentDate: snapshot.data?[index]['fechaPago'],                                  
-                                    paymentValue: snapshot.data?[index]['valorPago'].toDouble(),
-                                    paymentValueLetters: valorEnLetras,
-                                    conceptoPago: conceptoText,
-                                  ),
-                                ),
-                              );
-                              setState(() {});                      
-                              }*/
-                            ),
-                            // Display other relevant information about the document
-                            // ...
+                            onTap: () {},
                           );
                         },
                       ),
+
                     );
                   },
                 ),

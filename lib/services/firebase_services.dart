@@ -4,11 +4,15 @@ import 'package:intl/intl.dart';
 FirebaseFirestore db = FirebaseFirestore.instance;
 
 Future<Map<String, dynamic>> getCustomerInfo(String id) async {
-  
-  DocumentSnapshot<Map<String, dynamic>> infoCustomer = await db.collection('customers').doc(id).get();
-  
-  final Map<String, dynamic> data = infoCustomer.data() as Map<String, dynamic>;
-  final customer = {
+  final doc = await db.collection('customers').doc(id).get();
+
+  if (!doc.exists || doc.data() == null) {
+    return {};
+  }
+
+  final data = doc.data()!;
+
+  return {
     "nameCliente": data["nameCliente"],
     "lastnameCliente": data["lastnameCliente"],
     "genderCliente": data["genderCliente"],
@@ -25,7 +29,6 @@ Future<Map<String, dynamic>> getCustomerInfo(String id) async {
     "stateCliente": data["stateCliente"],
     "cityCliente": data["cityCliente"]
   };  
-  return customer;
 }
 
 Future<Map<String, dynamic>> getLoteInfo(String id) async {

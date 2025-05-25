@@ -91,6 +91,13 @@ class _PagosEsperadosState extends State<PagosEsperados> {
     final List<Map<String, dynamic>> results = await Future.wait(asyncTasks);
     matchingDocuments = results.where((e) => e.isNotEmpty).toList();
 
+    // ORDENAR POR FECHA DE MENOR A MAYOR
+    matchingDocuments.sort((a, b) {
+      final dateA = DateFormat('dd-MM-yyyy').parse(a['fechaPago']);
+      final dateB = DateFormat('dd-MM-yyyy').parse(b['fechaPago']);
+      return dateA.compareTo(dateB);
+    });
+
     return matchingDocuments;
   }
 
